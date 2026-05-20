@@ -1,0 +1,14 @@
+PySide6>=6.5.0
+python-docx>=1.1.0
+python-pptx>=0.6.23
+PyPDF2>=3.0.0
+pdf2docx>=0.5.8
+openpyxl>=3.1.0
+Pillow>=10.0.0
+pikepdf>=8.0.0
+py7zr>=0.20.0
+rarfile>=4.1
+patool>=1.7
+ffmpeg-python>=0.2.0
+send2trash>=1.8.0
+reportlab>=4.0.0
