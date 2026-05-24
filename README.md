@@ -16,6 +16,12 @@
 - 可选：Microsoft Office（用于最佳转换质量）
 - 可选：FFmpeg（用于视频/音频压缩）
 
+## 下载
+
+[![GitHub Release](https://img.shields.io/badge/Download-v1.1.0-blue)](https://github.com/FboatHongfeng/Pure-Document-hander/releases/download/v1.1.0/Pure.exe)
+
+前往 [Releases](https://github.com/FboatHongfeng/Pure-Document-hander/releases) 下载最新版 `Pure.exe`（单文件，约 170 MB，内嵌 FFmpeg，开箱即用）。
+
 ## 从源码运行
 
 ```bash
