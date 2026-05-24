@@ -5,11 +5,15 @@ import subprocess
 import shutil
 from pathlib import Path
 
+# Windows: 隐藏终端窗口
+_HIDE_TERMINAL = 0x08000000 if os.name == "nt" else 0
+
 
 def _get_bundled_dir() -> str:
-    """获取内置依赖目录（打包后与exe同目录）"""
+    """获取内置依赖目录（支持 PyInstaller onefile/onedir 两种模式）"""
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        # onefile 模式下资源解压到 _MEIPASS；onedir 下 exe 与资源同目录
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -58,7 +62,8 @@ def check_ffmpeg_available() -> bool:
     if not exe:
         return False
     try:
-        subprocess.run([exe, "-version"], capture_output=True, timeout=10)
+        subprocess.run([exe, "-version"], capture_output=True, timeout=10,
+                       creationflags=_HIDE_TERMINAL)
         return True
     except Exception:
         return False
@@ -70,7 +75,8 @@ def check_libreoffice_available() -> bool:
     if not exe:
         return False
     try:
-        subprocess.run([exe, "--version"], capture_output=True, timeout=10)
+        subprocess.run([exe, "--version"], capture_output=True, timeout=10,
+                       creationflags=_HIDE_TERMINAL)
         return True
     except Exception:
         return False
@@ -82,7 +88,8 @@ def get_ffmpeg_info() -> dict:
     if not exe:
         return {"available": False}
     try:
-        result = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=10,
+                                creationflags=_HIDE_TERMINAL)
         return {
             "available": True,
             "path": exe,

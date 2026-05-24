@@ -5,8 +5,11 @@ from pathlib import Path
 
 
 def get_file_size(path: str) -> int:
-    """获取文件大小（字节）"""
-    return os.path.getsize(path)
+    """获取文件大小（字节），失败返回 0"""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
 
 
 def get_dir_size(path: str) -> int:

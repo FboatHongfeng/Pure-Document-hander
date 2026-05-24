@@ -15,6 +15,7 @@ import re
 import subprocess
 import tempfile
 import json
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
@@ -33,40 +34,81 @@ def _get_video_duration(filepath: str) -> float | None:
     """获取视频时长（秒），失败返回 None"""
     ffprobe = find_ffprobe()
     if not ffprobe:
+        logger.warning("ffprobe 未找到，请确认 ffprobe.exe 已正确打包或已安装至 PATH")
         return None
     try:
         result = subprocess.run(
             [ffprobe, "-v", "quiet", "-print_format", "json",
              "-show_format", filepath],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
             creationflags=_HIDE_TERMINAL)
+
+        # 先检查返回码 — 返回码非零说明 ffprobe 执行失败
+        if result.returncode != 0:
+            stderr_tail = (result.stderr or "").strip()
+            logger.warning(
+                f"ffprobe 执行失败 (rc={result.returncode}) "
+                f"file={filepath!r} "
+                f"stderr={stderr_tail[-300:] if stderr_tail else '(空)'}"
+            )
+            return None
+
+        if not result.stdout.strip():
+            logger.warning(f"ffprobe 无输出: {filepath}")
+            return None
+
         info = json.loads(result.stdout)
-        return float(info["format"]["duration"])
-    except Exception:
+        dur = float(info.get("format", {}).get("duration", 0))
+        if dur <= 0:
+            logger.warning(f"视频时长为0或无效: {filepath}")
+            return None
+        return dur
+    except json.JSONDecodeError as e:
+        logger.warning(f"ffprobe JSON解析失败: {e}，原始输出前200字符: {result.stdout[:200] if result.stdout else '(空)'}")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning(f"ffprobe 超时: {filepath}")
+        return None
+    except FileNotFoundError:
+        logger.warning(f"ffprobe 可执行文件未找到或无法执行: {ffprobe}")
+        return None
+    except Exception as e:
+        logger.warning(f"获取视频时长失败: {e}")
         return None
 
 
 def _run_ffmpeg(cmd: list[str], duration: float | None = None,
                 progress_cb: Callable[[int, str], None] | None = None,
-                timeout: int = 1800) -> tuple[bool, str]:
+                timeout: int = 1800,
+                cancel_event: threading.Event | None = None) -> tuple[bool, str]:
     """运行 FFmpeg 命令，解析进度并回调
 
     progress_cb(percent, eta_str) — percent 0-100, eta_str 预计剩余时间
+    cancel_event — 设置后立即终止进程
     """
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             creationflags=_HIDE_TERMINAL,
-            errors="replace",
         )
         last_pct = 0
         time_re = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
         speed_re = re.compile(r"speed=\s*([\d.]+)x")
+        stderr_tail_lines: list[str] = []
 
         for line in proc.stderr:
+            if cancel_event and cancel_event.is_set():
+                proc.kill()
+                proc.wait()
+                return False, "用户取消"
+            # 滑动窗口保留最近的行用于错误报告
+            stderr_tail_lines.append(line)
+            if len(stderr_tail_lines) > 20:
+                stderr_tail_lines.pop(0)
+
             m = time_re.search(line)
             if m and duration and duration > 0:
                 h, mi, s, cs = int(m[1]), int(m[2]), int(m[3]), int(m[4])
@@ -90,11 +132,10 @@ def _run_ffmpeg(cmd: list[str], duration: float | None = None,
         if progress_cb:
             progress_cb(100, "完成")
         if proc.returncode != 0:
-            # read remaining stderr
-            try:
-                tail = proc.stderr.read()[-300:] if proc.stderr else ""
-            except Exception:
-                tail = ""
+            tail = "".join(stderr_tail_lines[-20:]).strip()
+            if tail:
+                # 截取最后 500 字符防止过长
+                tail = tail[-500:] if len(tail) > 500 else tail
             return False, tail if tail else "编码失败"
         return True, ""
     except subprocess.TimeoutExpired:
@@ -139,10 +180,15 @@ class PptCompressor(CompressorInterface):
 
     def _normal_compress(self, input_path: str, output_path: str) -> tuple[bool, str]:
         """常规压缩：压缩PPT中的图片，保留各元素独立"""
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext == ".ppt":
+            return False, "旧版PPT格式不支持，请先另存为PPTX"
+
         try:
             from pptx import Presentation
             from PIL import Image
             import io
+            from pptx.oxml.ns import qn
 
             prs = Presentation(input_path)
             for slide in prs.slides:
@@ -157,15 +203,25 @@ class PptCompressor(CompressorInterface):
                                 new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
                                 img = img.resize(new_size, Image.LANCZOS)
                             # 重新编码为JPEG以减小体积
-                            buf = io.BytesIO()
                             if img.mode in ("RGBA", "P"):
                                 img = img.convert("RGB")
+                            buf = io.BytesIO()
                             img.save(buf, format="JPEG", quality=70, optimize=True)
-                            # 替换图片数据
-                            from pptx.util import Inches, Pt
-                            from pptx.oxml.ns import qn
-                            # 通过blob替换 — 这里的实现较复杂，保持图片引用
-                            # 注：python-pptx替换图片较复杂，此处做降质处理
+
+                            # 替换图片blob
+                            new_blob = buf.getvalue()
+                            blip = shape._element.find('.//' + qn('a:blip'))
+                            if blip is not None:
+                                rId = blip.get(qn('r:embed'))
+                                if rId:
+                                    try:
+                                        image_part = slide.part.related_parts[rId]
+                                        image_part._blob = new_blob
+                                        # 若原图为PNG但已转为JPEG，更新内容类型
+                                        if image_part.content_type != 'image/jpeg':
+                                            image_part._content_type = 'image/jpeg'
+                                    except (KeyError, AttributeError):
+                                        pass
                         except Exception:
                             continue
 
@@ -193,20 +249,21 @@ class PptCompressor(CompressorInterface):
             # 回退：Python方案 — 把每页slide渲染为图片
             try:
                 from pptx import Presentation
-                from PIL import Image
-                import io
+                from PIL import Image, ImageDraw
 
                 prs = Presentation(input_path)
+                # 使用幻灯片实际尺寸（EMU → 像素 @96DPI）
+                slide_w = int(prs.slide_width / 914400 * 96)
+                slide_h = int(prs.slide_height / 914400 * 96)
                 images = []
 
                 for slide in prs.slides:
                     # 创建该slide的合成图
-                    img = Image.new("RGB", (1920, 1080), "white")
+                    img = Image.new("RGB", (slide_w, slide_h), "white")
+                    draw = ImageDraw.Draw(img)
                     y_offset = 50
                     for shape in slide.shapes:
                         if shape.has_text_frame:
-                            from PIL import ImageDraw, ImageFont
-                            draw = ImageDraw.Draw(img)
                             for para in shape.text_frame.paragraphs:
                                 if para.text.strip():
                                     draw.text((50, y_offset), para.text[:120], fill="black")
@@ -366,6 +423,7 @@ class VideoCompressor(CompressorInterface):
         strategy = kwargs.get("strategy", "balanced")
         target_size = kwargs.get("target_size")
         progress_cb = kwargs.get("progress_cb")
+        cancel_event = kwargs.get("cancel_event")
 
         if not output_path.endswith(".mp4"):
             output_path = output_path.rsplit(".", 1)[0] + ".mp4"
@@ -397,7 +455,8 @@ class VideoCompressor(CompressorInterface):
                     "-x265-params", f"pass=1:stats={stats}:no-info=1",
                     "-an", "-f", "null", "NUL"]
             ok1, err1 = _run_ffmpeg(cmd1, duration,
-                                    lambda p, e: progress_cb(p // 2, f"Pass1 {e}") if progress_cb else None)
+                                    lambda p, e: progress_cb(p // 2, f"Pass1 {e}") if progress_cb else None,
+                                    cancel_event=cancel_event)
             if not ok1:
                 return False, f"Pass1: {err1}"
 
@@ -413,7 +472,7 @@ class VideoCompressor(CompressorInterface):
             def cb2(p, e):
                 if progress_cb:
                     progress_cb(50 + p // 2, e)
-            ok2, err2 = _run_ffmpeg(cmd2, duration, cb2)
+            ok2, err2 = _run_ffmpeg(cmd2, duration, cb2, cancel_event=cancel_event)
             try:
                 os.remove(stats)
             except OSError:
@@ -449,7 +508,7 @@ class VideoCompressor(CompressorInterface):
             cmd += ["-movflags", "+faststart"]
             cmd.append(output_path)
 
-            return _run_ffmpeg(cmd, duration, progress_cb)
+            return _run_ffmpeg(cmd, duration, progress_cb, cancel_event=cancel_event)
 
 
 # ---------- 音频压缩 ----------
@@ -472,6 +531,7 @@ class AudioCompressor(CompressorInterface):
             return False, "FFmpeg 未安装，音频压缩不可用"
 
         level = kwargs.get("level", "medium")
+        cancel_event = kwargs.get("cancel_event")
         bitrate = self.PRESETS.get(level, "192k")
 
         cmd = [
@@ -482,10 +542,27 @@ class AudioCompressor(CompressorInterface):
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                return False, result.stderr[-200:] if result.stderr else "编码失败"
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=_HIDE_TERMINAL)
+            stderr_tail = []
+            for line in proc.stderr:
+                if cancel_event and cancel_event.is_set():
+                    proc.kill()
+                    proc.wait()
+                    return False, "用户取消"
+                stderr_tail.append(line)
+                if len(stderr_tail) > 10:
+                    stderr_tail.pop(0)
+            proc.wait(timeout=300)
+            if proc.returncode != 0:
+                tail = "".join(stderr_tail).strip()[-200:]
+                return False, tail if tail else "编码失败"
             return True, ""
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return False, "压缩超时"
         except Exception as e:
             return False, str(e)
 

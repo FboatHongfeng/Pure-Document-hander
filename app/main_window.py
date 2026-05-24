@@ -1,5 +1,6 @@
 """主窗口"""
 import os
+import sys
 
 from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QStackedWidget, QVBoxLayout, QApplication, QMessageBox
 from PySide6.QtCore import Qt
@@ -25,10 +26,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
         self.resize(1100, 720)
 
-        # App icon
+        # App icon (兼容 PyInstaller onefile/onedir)
         from PySide6.QtGui import QIcon
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                 "resources", "pure.ico")
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        icon_path = os.path.join(base, "resources", "pure.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             QApplication.instance().setWindowIcon(QIcon(icon_path))

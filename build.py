@@ -1,8 +1,8 @@
-"""FileForge 构建脚本
+"""Pure 构建脚本
 
 用法:
   python build.py              # 默认: onedir 目录模式（包含FFmpeg）
-  python build.py --onefile    # 单EXE模式（不包含FFmpeg，运行时检测）
+  python build.py --onefile    # 单EXE模式（包含FFmpeg，功能完整）
   python build.py --installer  # 创建NSIS安装器（包含FFmpeg）
 """
 import os
@@ -20,6 +20,7 @@ RESOURCES_DIR = PROJECT_ROOT / "resources"
 
 def download_ffmpeg() -> bool:
     """下载 FFmpeg Windows 便携版 (精简版 ~40MB)"""
+    import time
     if FFMPEG_DIR.exists() and (FFMPEG_DIR / "bin" / "ffmpeg.exe").exists():
         print("[OK] FFmpeg 已存在")
         return True
@@ -27,15 +28,13 @@ def download_ffmpeg() -> bool:
     print("[...] 下载 FFmpeg (约40MB)...")
     url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 
-    zip_path = PROJECT_ROOT / "ffmpeg_temp.zip"
+    zip_path = PROJECT_ROOT / f"ffmpeg_{int(time.time())}.zip"
     try:
         urllib.request.urlretrieve(url, zip_path)
         print("[...] 解压 FFmpeg...")
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # 找到根目录名
             root_dirs = {n.split("/")[0] for n in zf.namelist()}
             zf.extractall(PROJECT_ROOT)
-        zip_path.unlink()
 
         # 重命名解压出的目录
         for d in PROJECT_ROOT.iterdir():
@@ -50,9 +49,13 @@ def download_ffmpeg() -> bool:
         return False
     except Exception as e:
         print(f"[FAIL] 下载失败: {e}")
-        if zip_path.exists():
-            zip_path.unlink()
         return False
+    finally:
+        try:
+            if zip_path.exists():
+                zip_path.unlink()
+        except Exception:
+            pass
 
 
 def get_ffmpeg_binaries() -> list[tuple[str, str]]:
@@ -83,7 +86,7 @@ def build_onedir():
     add_binaries = get_ffmpeg_binaries()
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--name=FileForge",
+        "--name=Pure",
         "--onedir",
         "--windowed",
         "--clean",
@@ -114,31 +117,39 @@ def build_onedir():
     ]
 
     subprocess.run(cmd, check=True)
-    print(f"\n[OK] 构建完成: {PROJECT_ROOT / 'dist' / 'FileForge'}")
+    print(f"\n[OK] 构建完成: {PROJECT_ROOT / 'dist' / 'Pure'}")
 
     # 复制FFmpeg到输出目录（PyInstaller不会自动复制add-binary到正确位置）
-    dist_ffmpeg = PROJECT_ROOT / "dist" / "FileForge" / "ffmpeg"
+    dist_ffmpeg = PROJECT_ROOT / "dist" / "Pure" / "ffmpeg"
     if FFMPEG_DIR.exists() and not dist_ffmpeg.exists():
         shutil.copytree(str(FFMPEG_DIR), str(dist_ffmpeg))
         print(f"[OK] FFmpeg 已复制到输出目录")
 
 
 def build_onefile():
-    """单EXE模式 — 不打包FFmpeg，运行时检测"""
-    print("\n=== 构建模式: onefile (单EXE) ===\n")
+    """单EXE模式 — 包含FFmpeg，功能完整"""
+    print("\n=== 构建模式: onefile (单EXE，功能完整) ===\n")
+
+    if not download_ffmpeg():
+        print("[!] FFmpeg缺失，视频/音频功能将不可用")
 
     add_data = [
         str(RESOURCES_DIR) + os.pathsep + "resources",
     ]
 
+    add_binaries = get_ffmpeg_binaries()
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--name=FileForge",
+        "--name=Pure",
         "--onefile",
         "--windowed",
         "--clean",
         "--noconfirm",
     ]
+
+    for src, dst in add_binaries:
+        cmd += ["--add-binary", f"{src}{os.pathsep}{dst}"]
 
     for data in add_data:
         cmd += ["--add-data", data]
@@ -160,8 +171,7 @@ def build_onefile():
     ]
 
     subprocess.run(cmd, check=True)
-    print(f"\n[OK] 构建完成: {PROJECT_ROOT / 'dist' / 'FileForge.exe'}")
-    print("[!] 注意: 单EXE模式不含FFmpeg，视频/音频压缩需要用户自行安装FFmpeg")
+    print(f"\n[OK] 构建完成: {PROJECT_ROOT / 'dist' / 'Pure.exe'}")
 
 
 def main():
@@ -179,7 +189,7 @@ def main():
         print("Installer 模式: 先构建 onedir，再用 NSIS 打包...")
         build_onedir()
         print("\n请安装 NSIS (https://nsis.sourceforge.io) 后手动创建安装包。")
-        print(f"安装目录: {PROJECT_ROOT / 'dist' / 'FileForge'}")
+        print(f"安装目录: {PROJECT_ROOT / 'dist' / 'Pure'}")
     else:
         build_onedir()
 

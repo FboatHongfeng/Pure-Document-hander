@@ -1,5 +1,6 @@
 """文件压缩页"""
 import os
+import threading
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -34,6 +35,11 @@ class CompressWorker(QThread):
         self._input = input_path
         self._output = output_path
         self._kwargs = kwargs
+        self._cancel_event = threading.Event()
+        self._kwargs["cancel_event"] = self._cancel_event
+
+    def stop(self):
+        self._cancel_event.set()
 
     def run(self):
         self._kwargs["progress_cb"] = lambda p, e: self.progress.emit(p, e)
@@ -80,6 +86,22 @@ class CompressPage(QWidget):
         r.addStretch()
         l.addLayout(r)
 
+        # 输出目录
+        out_layout = QHBoxLayout()
+        self._out_label = QLabel("输出目录:")
+        self._out_label.setFixedWidth(70)
+        out_layout.addWidget(self._out_label)
+        self._out_dir_label = QLabel(self._output_dir)
+        out_layout.addWidget(self._out_dir_label, 1)
+        self._out_browse_btn = QPushButton("浏览...")
+        self._out_browse_btn.clicked.connect(self._browse_output)
+        out_layout.addWidget(self._out_browse_btn)
+        self._out_open_btn = QPushButton("打开")
+        self._out_open_btn.setToolTip("打开输出目录")
+        self._out_open_btn.clicked.connect(lambda: os.startfile(self._output_dir))
+        out_layout.addWidget(self._out_open_btn)
+        l.addLayout(out_layout)
+
         self._params_frame = QFrame()
         self._params_frame.setVisible(False)
         self._pl = QVBoxLayout(self._params_frame)
@@ -106,12 +128,18 @@ class CompressPage(QWidget):
         l.addWidget(self._prog)
 
         r2 = QHBoxLayout()
+        r2.addStretch()
         self._start_btn = QPushButton("开始压缩")
         self._start_btn.setFixedHeight(44)
         self._start_btn.setFixedWidth(200)
         self._start_btn.clicked.connect(self._start)
-        r2.addStretch()
         r2.addWidget(self._start_btn)
+        self._stop_btn = QPushButton("终止")
+        self._stop_btn.setFixedHeight(44)
+        self._stop_btn.setFixedWidth(80)
+        self._stop_btn.setVisible(False)
+        self._stop_btn.clicked.connect(self._stop)
+        r2.addWidget(self._stop_btn)
         r2.addStretch()
         l.addLayout(r2)
         l.addStretch()
@@ -128,6 +156,12 @@ class CompressPage(QWidget):
         if p:
             self._set(p)
             self.drop_zone.set_text(f"已选择: {os.path.basename(p)}")
+
+    def _browse_output(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "选择输出目录", self._output_dir)
+        if dir_path:
+            self._output_dir = dir_path
+            self._out_dir_label.setText(dir_path)
 
     def _set(self, path):
         self._input_file = path
@@ -249,6 +283,10 @@ class CompressPage(QWidget):
             idx = self._lc.findData("custom")
             if idx >= 0:
                 self._lc.setCurrentIndex(idx)
+                # 确保自定义大小输入框可见并自动填入估算值
+                self._cr.setVisible(True)
+                sz = get_file_size(self._input_file)
+                self._ti.setText(str(max(1, int(sz / 1024 / 1024 / 8))))
 
     def _on_lvl(self, idx):
         show = self._lc.currentData() == "custom"
@@ -312,6 +350,7 @@ class CompressPage(QWidget):
         self._compressing = True
         self._start_btn.setEnabled(False)
         self._start_btn.setText("压缩中...")
+        self._stop_btn.setVisible(True)
         self._prog_status.setText("正在压缩...")
         self._prog_bar.setRange(0, 0)
         self._prog_bar.setValue(0)
@@ -321,6 +360,13 @@ class CompressPage(QWidget):
         self._w.progress.connect(self._on_prog)
         self._w.finished.connect(self._on_done)
         self._w.start()
+
+    def _stop(self):
+        if hasattr(self, "_w") and self._w and self._w.isRunning():
+            self._w.stop()
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.setText("终止中...")
+            self._prog_status.setText("正在终止...")
 
     def _on_prog(self, pct, eta):
         if self._prog_bar.maximum() == 0:
@@ -333,6 +379,9 @@ class CompressPage(QWidget):
             self._compressing = False
             self._start_btn.setEnabled(True)
             self._start_btn.setText("开始压缩")
+            self._stop_btn.setVisible(False)
+            self._stop_btn.setEnabled(True)
+            self._stop_btn.setText("终止")
             self._prog_bar.setRange(0, 100)
             self._prog_bar.setValue(100 if ok else 0)
             if ok:
@@ -340,6 +389,9 @@ class CompressPage(QWidget):
                 n = format_size(get_file_size(out))
                 self._prog_status.setText("压缩完成")
                 self._prog_detail.setText(f"{o} -> {n}\n输出: {os.path.abspath(out)}")
+            elif error == "用户取消":
+                self._prog_status.setText("已取消")
+                self._prog_detail.setText("")
             else:
                 self._prog_status.setText("压缩失败")
                 self._prog_detail.setText(error[:120])
@@ -348,18 +400,11 @@ class CompressPage(QWidget):
 
     @staticmethod
     def _load_output_dir(category):
-        import json
-        try:
-            p = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "resources", "user_settings.json")
-            if os.path.exists(p):
-                with open(p) as f:
-                    s = json.load(f)
-                key = "convert_dir" if category == "Convert" else "compress_dir"
-                if key in s and os.path.isdir(s[key]):
-                    return s[key]
-        except Exception:
-            pass
+        from app.utils.config import config
+        key = "convert_dir" if category == "Convert" else "compress_dir"
+        dir_ = config.get(key)
+        if dir_ and os.path.isdir(dir_):
+            return dir_
         return get_default_output_dir(category)
 
     # ── theme ──
@@ -370,6 +415,15 @@ class CompressPage(QWidget):
         self._desc.setStyleSheet(f"font-size:13px; color:{p.text_secondary}; border:none;")
         self._file_label.setStyleSheet(f"font-size:13px; color:{p.text_secondary}; border:none;")
 
+        # 输出目录行
+        self._out_label.setStyleSheet(f"font-size:14px; font-weight:bold; color:{p.text_primary}; border:none;")
+        self._out_dir_label.setStyleSheet(f"font-size:13px; color:{p.text_secondary}; border:none;")
+        for btn in (self._out_browse_btn, self._out_open_btn):
+            btn.setStyleSheet(f"""
+                QPushButton {{ background:{p.bg_input}; border:1px solid {p.border_card};
+                    border-radius:8px; padding:8px 16px; color:{p.text_primary}; font-size:13px; }}
+                QPushButton:hover {{ background:{p.bg_hover}; }}""")
+
         self._browse_btn.setStyleSheet(f"""
             QPushButton {{ background:{p.bg_input}; border:1px solid {p.border_card};
                 border-radius:8px; padding:8px 16px; color:{p.text_primary}; font-size:13px; }}
@@ -379,6 +433,11 @@ class CompressPage(QWidget):
                 color:{p.accent_text}; font-size:15px; font-weight:bold; }}
             QPushButton:hover {{ background:{p.accent_hover}; }}
             QPushButton:disabled {{ background:{p.bg_hover}; color:{p.text_muted}; }}""")
+        self._stop_btn.setStyleSheet(f"""
+            QPushButton {{ background:#d63031; border:none; border-radius:8px;
+                color:#ffffff; font-size:15px; font-weight:bold; }}
+            QPushButton:hover {{ background:#b71c1c; }}
+            QPushButton:disabled {{ background:#666; color:#999; }}""")
 
         self._params_frame.setStyleSheet(
             f"QFrame {{ background:{p.bg_card}; border:1px solid {p.border_card}; border-radius:12px; }}")

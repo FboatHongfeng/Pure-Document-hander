@@ -1,5 +1,6 @@
 """文件转换页 — 自识别格式"""
 import os
+import threading
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -16,7 +17,6 @@ from app.services.converter import (
 from app.services.dependency import find_libreoffice
 from app.utils.i18n import t
 from app.utils.file_utils import get_extension, format_size, get_file_size, get_default_output_dir
-import json as _json
 from app.utils.theme import theme
 from app.utils.logger import get_logger
 
@@ -31,6 +31,11 @@ class ConvertWorker(QThread):
         self._input = input_path
         self._output = output_path
         self._kwargs = kwargs
+        self._cancel_event = threading.Event()
+        self._kwargs["cancel_event"] = self._cancel_event
+
+    def stop(self):
+        self._cancel_event.set()
 
     def run(self):
         try:
@@ -114,10 +119,21 @@ class ConvertPage(QWidget):
 
         layout.addStretch()
 
+        btn_layout2 = QHBoxLayout()
+        btn_layout2.addStretch()
         self._start_btn = QPushButton(t("convert", "start_convert"))
         self._start_btn.setFixedHeight(44)
+        self._start_btn.setFixedWidth(200)
         self._start_btn.clicked.connect(self._start_convert)
-        layout.addWidget(self._start_btn)
+        btn_layout2.addWidget(self._start_btn)
+        self._stop_btn = QPushButton("终止")
+        self._stop_btn.setFixedHeight(44)
+        self._stop_btn.setFixedWidth(80)
+        self._stop_btn.setVisible(False)
+        self._stop_btn.clicked.connect(self._stop_convert)
+        btn_layout2.addWidget(self._stop_btn)
+        btn_layout2.addStretch()
+        layout.addLayout(btn_layout2)
 
         self._converting = False
         self._refresh_style("light")
@@ -182,6 +198,7 @@ class ConvertPage(QWidget):
         self._converting = True
         self._start_btn.setEnabled(False)
         self._start_btn.setText("转换中...")
+        self._stop_btn.setVisible(True)
         self.progress_card.setVisible(True)
         self.progress_card.set_status("正在转换...")
         self.progress_card.progress.setRange(0, 0)  # 滚动式
@@ -192,16 +209,29 @@ class ConvertPage(QWidget):
         self._worker.finished.connect(self._on_done)
         self._worker.start()
 
+    def _stop_convert(self):
+        if hasattr(self, "_worker") and self._worker and self._worker.isRunning():
+            self._worker.stop()
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.setText("终止中...")
+            self.progress_card.set_status("正在终止...")
+
     def _on_done(self, ok: bool, error: str, output_path: str):
         try:
             self._converting = False
             self._start_btn.setEnabled(True)
             self._start_btn.setText("开始转换")
+            self._stop_btn.setVisible(False)
+            self._stop_btn.setEnabled(True)
+            self._stop_btn.setText("终止")
             self.progress_card.progress.setRange(0, 100)
             self.progress_card.progress.setValue(100 if ok else 0)
             if ok:
                 self.progress_card.set_status("转换完成")
                 self.progress_card.set_detail(f"输出: {os.path.abspath(output_path)}")
+            elif error == "用户取消":
+                self.progress_card.set_status("已取消")
+                self.progress_card.set_detail("")
             else:
                 self.progress_card.set_status("转换失败")
                 self.progress_card.set_detail(error[:120])
@@ -212,18 +242,11 @@ class ConvertPage(QWidget):
 
     @staticmethod
     def _load_output_dir(category: str) -> str:
-        import json
-        try:
-            p = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "resources", "user_settings.json")
-            if os.path.exists(p):
-                with open(p, "r") as f:
-                    s = json.load(f)
-                key = "convert_dir" if category == "Convert" else "compress_dir"
-                if key in s and os.path.isdir(s[key]):
-                    return s[key]
-        except Exception:
-            pass
+        from app.utils.config import config
+        key = "convert_dir" if category == "Convert" else "compress_dir"
+        dir_ = config.get(key)
+        if dir_ and os.path.isdir(dir_):
+            return dir_
         return get_default_output_dir(category)
 
     def _refresh_style(self, _):
@@ -264,5 +287,11 @@ class ConvertPage(QWidget):
                 color:{p.accent_text}; font-size:15px; font-weight:bold;
             }}
             QPushButton:hover {{ background:{p.accent_hover}; }}
+            QPushButton:disabled {{ background:{p.bg_hover}; color:{p.text_muted}; }}
         """)
+        self._stop_btn.setStyleSheet(f"""
+            QPushButton {{ background:#d63031; border:none; border-radius:8px;
+                color:#ffffff; font-size:15px; font-weight:bold; }}
+            QPushButton:hover {{ background:#b71c1c; }}
+            QPushButton:disabled {{ background:#666; color:#999; }}""")
 

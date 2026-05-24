@@ -132,12 +132,31 @@ def _scan_tree(path: str, depth: int, max_depth: int, prog_cb) -> TreeNode:
         type_sizes[ext] = type_sizes.get(ext, 0) + sz
         type_counts[ext] = type_counts.get(ext, 0) + 1
 
-    for ext, sz in sorted(type_sizes.items(), key=lambda x: x[1], reverse=True)[:20]:
+    sorted_types = sorted(type_sizes.items(), key=lambda x: x[1], reverse=True)
+    for ext, sz in sorted_types[:20]:
         if sz > 0:
             node.children.append(TreeNode(
                 name=f"{ext} ({type_counts[ext]}个)",
                 path=os.path.join(path, f"[{ext}]"),
                 size=sz, is_dir=False))
+
+    # 将剩余小扩展聚合为可钻入的"其他"节点
+    remaining = sorted_types[20:]
+    if remaining:
+        other_size = sum(sz for _, sz in remaining)
+        other_count = sum(type_counts[ext] for ext, _ in remaining)
+        if other_size > 0:
+            other_node = TreeNode(
+                name=f"其他 ({other_count}个)",
+                path=os.path.join(path, "[其他]"),
+                size=other_size, is_dir=True)
+            for ext, sz in remaining:
+                if sz > 0:
+                    other_node.children.append(TreeNode(
+                        name=f"{ext} ({type_counts[ext]}个)",
+                        path=os.path.join(path, f"[{ext}]"),
+                        size=sz, is_dir=False))
+            node.children.append(other_node)
 
     if prog_cb:
         prog_cb(1.0)
@@ -196,10 +215,6 @@ class DiskSpacePage(QWidget):
         # 控制栏
         ctrl = QHBoxLayout()
 
-        self.scan_all_btn = QPushButton("扫描全部磁盘")
-        self.scan_all_btn.clicked.connect(self._scan_all_disks)
-        ctrl.addWidget(self.scan_all_btn)
-
         self._stop_btn = QPushButton("终止扫描")
         self._stop_btn.clicked.connect(self._stop_scan)
         self._stop_btn.setVisible(False)
@@ -244,11 +259,12 @@ class DiskSpacePage(QWidget):
         self._treemap_hint = QLabel("左键进入子目录 | 右键打开文件夹")
         layout.addWidget(self._treemap_hint)
 
+        self._populate_drive_buttons()
         self._refresh_style("light")
 
     # ---------- 逻辑 ----------
 
-    def _scan_all_disks(self):
+    def _populate_drive_buttons(self):
         self._clear_drive_btns()
         drives = self._get_drives()
         for d in drives:
@@ -268,7 +284,6 @@ class DiskSpacePage(QWidget):
     def _start_scan(self, path: str):
         logger.info(f"磁盘扫描开始: {path}")
         try:
-            self.scan_all_btn.setVisible(False)
             self._stop_btn.setVisible(True)
             self._progress.setVisible(True)
             self._progress.setValue(0)
@@ -294,7 +309,6 @@ class DiskSpacePage(QWidget):
 
     def _scan_finished(self):
         self._progress.setVisible(False)
-        self.scan_all_btn.setVisible(True)
         self._stop_btn.setVisible(False)
 
     def _on_scan_error(self, error_msg: str):
@@ -423,14 +437,6 @@ class DiskSpacePage(QWidget):
             }}
             QPushButton:hover {{ background:{p.bg_hover}; }}
         """)
-        self.scan_all_btn.setStyleSheet(f"""
-            QPushButton {{
-                background:{p.accent}; border:none; border-radius:6px;
-                padding:8px 16px; color:{p.accent_text};
-                font-size:13px; font-weight:bold;
-            }}
-            QPushButton:hover {{ background:{p.accent_hover}; }}
-        """)
         self._stop_btn.setStyleSheet(f"""
             QPushButton {{
                 background:#d63031; border:none; border-radius:6px;
@@ -450,3 +456,17 @@ class DiskSpacePage(QWidget):
             }}
             QPushButton:hover {{ background:{p.bg_hover}; }}
         """)
+
+        # 驱动按钮样式
+        for i in range(self._drive_btns_layout.count()):
+            w = self._drive_btns_layout.itemAt(i).widget()
+            if w and isinstance(w, QPushButton):
+                w.setStyleSheet(f"""
+                    QPushButton {{
+                        background:{p.bg_input}; border:1px solid {p.border_card};
+                        border-radius:8px; padding:8px 16px;
+                        color:{p.text_primary}; font-size:13px;
+                    }}
+                    QPushButton:hover {{ background:{p.accent}; color:{p.accent_text}; }}
+                    QPushButton:checked {{ background:{p.accent}; color:{p.accent_text}; }}
+                """)

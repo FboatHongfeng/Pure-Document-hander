@@ -5,6 +5,7 @@
 import os
 import subprocess
 import tempfile
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from app.services.dependency import find_libreoffice
 from app.utils.logger import get_logger
 
 logger = get_logger("converter")
+
+# Windows: 隐藏终端窗口
+_HIDE_TERMINAL = 0x08000000 if os.name == "nt" else 0
 
 
 # ---------- 中文字体注册 ----------
@@ -77,16 +81,27 @@ class ConverterInterface(ABC):
 class LibreOfficeConverter:
 
     @staticmethod
-    def convert(input_path: str, output_dir: str, output_format: str) -> str | None:
+    def convert(input_path: str, output_dir: str, output_format: str,
+                cancel_event: threading.Event | None = None) -> str | None:
         exe = find_libreoffice()
         if not exe:
             return None
         try:
-            subprocess.run(
+            proc = subprocess.Popen(
                 [exe, "--headless", "--convert-to", output_format,
                  "--outdir", output_dir, input_path],
-                capture_output=True, timeout=120,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=_HIDE_TERMINAL,
             )
+            while proc.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    proc.kill()
+                    proc.wait()
+                    return None
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
             stem = Path(input_path).stem
             for cand in [f"{stem}.{output_format}", f"{stem}.{output_format.lower()}"]:
                 out = os.path.join(output_dir, cand)
@@ -138,7 +153,8 @@ class DocxToPdfConverter(ConverterInterface):
 
         # 3) LibreOffice
         lo = LibreOfficeConverter()
-        lo_result = lo.convert(input_path, os.path.dirname(output_path), "pdf")
+        lo_result = lo.convert(input_path, os.path.dirname(output_path), "pdf",
+                               cancel_event=kwargs.get("cancel_event"))
         if lo_result:
             if lo_result != output_path:
                 import shutil
@@ -372,7 +388,8 @@ class PptxToPdfConverter(ConverterInterface):
 
         # 方案2: LibreOffice
         lo = LibreOfficeConverter()
-        lo_result = lo.convert(input_path, os.path.dirname(output_path), "pdf")
+        lo_result = lo.convert(input_path, os.path.dirname(output_path), "pdf",
+                               cancel_event=kwargs.get("cancel_event"))
         if lo_result:
             if lo_result != output_path:
                 import shutil
@@ -496,7 +513,8 @@ class XlsxToPdfConverter(ConverterInterface):
             return True
         # 2) LibreOffice
         lo = LibreOfficeConverter()
-        lo_result = lo.convert(input_path, os.path.dirname(output_path), "pdf")
+        lo_result = lo.convert(input_path, os.path.dirname(output_path), "pdf",
+                               cancel_event=kwargs.get("cancel_event"))
         if lo_result:
             if lo_result != output_path:
                 import shutil
@@ -657,54 +675,6 @@ class ImagesToPdfConverter(ConverterInterface):
             return False
 
 
-class ArchiveConverter(ConverterInterface):
-    """压缩格式互转 (RAR->ZIP, ZIP->7Z 等)"""
-
-    def supported_inputs(self) -> list[str]:
-        return [".rar", ".zip", ".7z", ".tar", ".gz"]
-
-    def supported_outputs(self) -> list[str]:
-        return [".zip", ".7z"]       # RAR 创建受专利限制，不输出
-
-    def convert(self, input_path: str, output_path: str, **kwargs) -> bool:
-        in_ext = get_extension(input_path)
-        out_ext = get_extension(output_path)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            extracted = os.path.join(tmpdir, "extracted")
-            os.makedirs(extracted, exist_ok=True)
-
-            if not self._extract(input_path, extracted, in_ext):
-                return False
-            return self._pack(extracted, output_path, out_ext)
-
-    def _extract(self, input_path: str, dest: str, ext: str) -> bool:
-        try:
-            import patoolib
-            patoolib.extract_archive(input_path, outdir=dest, verbosity=-1)
-            return True
-        except Exception as e:
-            logger.error(f"解压失败 {input_path}: {e}")
-            return False
-
-    def _pack(self, source_dir: str, output_path: str, ext: str) -> bool:
-        try:
-            if ext == ".zip":
-                import shutil
-                stem = os.path.splitext(output_path)[0]
-                shutil.make_archive(stem, "zip", source_dir)
-                return True
-            elif ext == ".7z":
-                import py7zr
-                with py7zr.SevenZipFile(output_path, "w") as archive:
-                    archive.writeall(source_dir, arcname="")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"打包失败 {output_path}: {e}")
-            return False
-
-
 # ---------- 转换器注册表 ----------
 
 _converter_registry: dict[str, dict[str, ConverterInterface]] = {}
@@ -725,7 +695,6 @@ _register(PptxToPdfConverter())
 _register(XlsxToPdfConverter())
 _register(XlsxToDocxConverter())
 _register(ImagesToPdfConverter())
-_register(ArchiveConverter())
 
 
 # ---------- 公共API ----------

@@ -205,10 +205,12 @@ class DonatePage(QWidget):
         self._desc.setStyleSheet(f"font-size: 14px; color: {p.text_secondary};")
         for lbl in (self._pay_hint, self._wx_hint):
             lbl.setStyleSheet(f"font-size: 12px; color: {p.text_secondary};")
+        github_url = t("donate", "github_url")
+        github_text = t("donate", "github_text")
         self._github_label.setText(
-            f'<a href="https://github.com/待添加" '
+            f'<a href="{github_url}" '
             f'style="color:#c07830; font-size:12px; font-weight:bold; text-decoration:none;">'
-            f'GitHub: 待添加</a>')
+            f'{github_text}</a>')
         self._note.setStyleSheet(f"font-size: 12px; color: {p.text_muted};")
         self._credit.setStyleSheet(f"font-size: 11px; color: {p.text_muted};")
         self._assoc_label.setStyleSheet(f"font-size: 11px; color: {p.text_muted};")

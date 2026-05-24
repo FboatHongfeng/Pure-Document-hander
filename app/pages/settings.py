@@ -1,7 +1,5 @@
 """设置页面 — Toggle 开关 + 输出路径 + 折叠分组"""
 import os
-import json
-from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -15,24 +13,7 @@ from app.services.shell_integration import (
 from app.widgets.toggle import ToggleSwitch
 from app.utils.i18n import t
 from app.utils.theme import theme
-
-SETTINGS_FILE = Path(__file__).parent.parent.parent / "resources" / "user_settings.json"
-
-
-def _load_settings() -> dict:
-    try:
-        with open(SETTINGS_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _save_settings(s: dict):
-    try:
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(s, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+from app.utils.config import config
 
 
 def _default_dir(kind: str) -> str:
@@ -70,20 +51,26 @@ class SectionHeader(QPushButton):
 class PathRow(QFrame):
     """输出路径行: 标签 + 路径编辑框 + 浏览按钮"""
 
-    def __init__(self, label: str, path: str, parent=None):
+    def __init__(self, label: str, default_kind: str, parent=None):
         super().__init__(parent)
+        self._default_kind = default_kind
+        self._default_path = _default_dir(default_kind)
         self.setAutoFillBackground(True)
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 4, 8, 4)
         self._lbl = QLabel(f"{label}:")
         self._lbl.setFixedWidth(90)
         row.addWidget(self._lbl)
-        self._input = QLineEdit(path)
-        self._input.setPlaceholderText("输出目录路径...")
+        self._input = QLineEdit()
+        self._input.setText(self._default_path)
         row.addWidget(self._input, 1)
         self._btn = QPushButton("浏览...")
         self._btn.clicked.connect(self._browse)
         row.addWidget(self._btn)
+        self._open_btn = QPushButton("打开")
+        self._open_btn.setToolTip("打开输出目录")
+        self._open_btn.clicked.connect(self._open_dir)
+        row.addWidget(self._open_btn)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._apply_style(theme().palette)
         theme().changed.connect(lambda _: self._apply_style(theme().palette))
@@ -99,14 +86,16 @@ class PathRow(QFrame):
                 color:{p.text_primary}; font-size:12px;
             }}
         """)
-        self._btn.setStyleSheet(f"""
+        btn_qss = f"""
             QPushButton {{
                 background:{p.bg_input}; border:1px solid {p.border_card};
                 border-radius:4px; padding:4px 12px;
                 color:{p.text_primary}; font-size:12px;
             }}
             QPushButton:hover {{ background:{p.bg_hover}; }}
-        """)
+        """
+        self._btn.setStyleSheet(btn_qss)
+        self._open_btn.setStyleSheet(btn_qss)
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "选择输出目录")
@@ -120,9 +109,13 @@ class PathRow(QFrame):
                     break
                 p = p.parent()
 
+    def _open_dir(self):
+        import os as _os
+        _os.startfile(self.path)
+
     @property
     def path(self) -> str:
-        return self._input.text().strip() or _default_dir("output")
+        return self._input.text().strip() or self._default_path
 
 
 class SettingsPage(QWidget):
@@ -172,15 +165,9 @@ class SettingsPage(QWidget):
         self._sw_context_menu.toggled.connect(lambda v: (self._on_ctx_toggled(v), setattr(self, '_dirty', True)))
         self._add_section("系统集成", [self._ctx_row])
 
-        # ── 提示 ──
-        self._add_section("提示与警告", [
-            self._toggle_row("LibreOffice 提示", "复杂文件时提示安装 LibreOffice", "libre_prompt"),
-            self._toggle_row("垃圾扫描安全提示", "垃圾分析结果中显示安全警告", "junk_warning"),
-        ])
-
         # ── 输出目录 ──
-        self._convert_path = PathRow("文件转换", _default_dir("convert"))
-        self._compress_path = PathRow("文件压缩", _default_dir("compress"))
+        self._convert_path = PathRow("文件转换", "convert")
+        self._compress_path = PathRow("文件压缩", "compress")
         self._output_section_content = QWidget()
         out_layout = QVBoxLayout(self._output_section_content)
         out_layout.setContentsMargins(0, 2, 0, 2)
@@ -243,35 +230,35 @@ class SettingsPage(QWidget):
     # ── 数据 ──
 
     def _load_settings(self):
-        s = _load_settings()
-        # 主题
-        saved_theme = s.get("theme", "light")
-        theme().set_theme(saved_theme)
+        theme().set_theme(config.get("theme", "light"))
         sw = getattr(self, "_sw_theme", None)
         if sw:
             sw.blockSignals(True)
-            sw.setChecked(saved_theme == "dark")
+            sw.setChecked(config.get("theme", "light") == "dark")
             sw.blockSignals(False)
-        # 输出路径
-        if "convert_dir" in s:
-            self._convert_path._input.setText(s["convert_dir"])
-        if "compress_dir" in s:
-            self._compress_path._input.setText(s["compress_dir"])
-        # 右键菜单状态
+        for attr, key in [(self._convert_path, "convert_dir"),
+                          (self._compress_path, "compress_dir")]:
+            dir_ = config.get(key)
+            if dir_ and os.path.isdir(dir_):
+                attr._input.setText(dir_)
         installed = is_context_menu_installed()
         sw_ctx = getattr(self, "_sw_context_menu", None)
         if sw_ctx:
             sw_ctx.blockSignals(True)
-            sw_ctx.setChecked(installed or s.get("context_menu", False))
+            sw_ctx.setChecked(installed)
             sw_ctx.blockSignals(False)
 
     def _save_all(self):
-        s = _load_settings()
-        s["theme"] = theme().current
-        s["convert_dir"] = self._convert_path.path
-        s["compress_dir"] = self._compress_path.path
-        s["context_menu"] = getattr(self, "_sw_context_menu", None) is not None and self._sw_context_menu.isChecked()
-        _save_settings(s)
+        config.set("theme", theme().current)
+        # 仅当用户显式修改了路径才保存，不保存默认值
+        for attr, key in [(self._convert_path, "convert_dir"),
+                           (self._compress_path, "compress_dir")]:
+            custom = attr._input.text().strip()
+            if custom and custom != attr._default_path:
+                config.set(key, custom)
+            else:
+                config.set(key, "")  # 与默认值相同或为空，清空让后续使用默认值
+        config.save()
         self._dirty = False
         self._update_main_pages()
         self._navigate_to(0)
@@ -310,6 +297,7 @@ class SettingsPage(QWidget):
             # 更新压缩页
             cmp = w.pages[1]
             cmp._output_dir = compress_dir
+            cmp._out_dir_label.setText(compress_dir)
 
     def _navigate_to(self, index):
         w = self.window()
@@ -343,7 +331,7 @@ class SettingsPage(QWidget):
         for header, _ in getattr(self, '_sections', []):
             header._apply_style(p)
         # Toggle rows - all labels get theme color
-        for key in ["theme", "context_menu", "libre_prompt", "junk_warning"]:
+        for key in ["theme", "context_menu"]:
             w = getattr(self, f"_tw_{key}_widget", None)
             tl = getattr(self, f"_tw_{key}_title", None)
             dl = getattr(self, f"_tw_{key}_desc", None)

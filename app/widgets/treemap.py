@@ -128,12 +128,28 @@ def _layout_row(sizes, items_data, bounds, results, row_sum, vertical):
 
 # ---------- 颜色方案 ----------
 
+# 浅色调色板 — 所有颜色保持高亮度以确保黑色文字可读
 DEPTH_COLORS = [
-    QColor("#4a6cf7"), QColor("#6c5ce7"), QColor("#00b894"),
-    QColor("#e17055"), QColor("#fdcb6e"), QColor("#0984e3"),
-    QColor("#a29bfe"), QColor("#55efc4"), QColor("#ff7675"),
-    QColor("#fab1a0"), QColor("#74b9ff"), QColor("#81ecec"),
-    QColor("#636e72"), QColor("#b2bec3"),
+    QColor("#FFCDD2"),  # Red 100
+    QColor("#F8BBD0"),  # Pink 100
+    QColor("#E1BEE7"),  # Purple 100
+    QColor("#D1C4E9"),  # Deep Purple 100
+    QColor("#C5CAE9"),  # Indigo 100
+    QColor("#BBDEFB"),  # Blue 100
+    QColor("#B3E5FC"),  # Light Blue 100
+    QColor("#B2EBF2"),  # Cyan 100
+    QColor("#B2DFDB"),  # Teal 100
+    QColor("#C8E6C9"),  # Green 100
+    QColor("#DCEDC8"),  # Light Green 100
+    QColor("#F0F4C3"),  # Lime 100
+    QColor("#FFF9C4"),  # Yellow 100
+    QColor("#FFECB3"),  # Amber 100
+    QColor("#FFE0B2"),  # Orange 100
+    QColor("#FFCCBC"),  # Deep Orange 100
+    QColor("#D7CCC8"),  # Brown 100
+    QColor("#F5F5F5"),  # Grey 100
+    QColor("#CFD8DC"),  # Blue Grey 100
+    QColor("#E8F5E9"),  # Green 50
 ]
 
 
@@ -144,7 +160,8 @@ def _color_for_node(node: TreeNode, depth: int = 0) -> QColor:
     v = c.value()
     hsh = int(hashlib.md5(node.name.encode()).hexdigest()[:4], 16)
     h = (h + (hsh % 30) - 15) % 360
-    v = max(120, min(255, v + (hsh % 40) - 20))
+    v = max(200, min(255, v + (hsh % 30) - 15))
+    s = min(s, 120)
     return QColor.fromHsv(h, s, v)
 
 
@@ -255,7 +272,7 @@ class TreemapWidget(QWidget):
             p.setPen(QColor(theme().palette.text_muted))
             p.setFont(QFont("Microsoft YaHei", 11))
             p.drawText(self.rect(), Qt.AlignCenter,
-                       "点击「扫描全部磁盘」开始分析" if not self._current
+                       "请选择一个磁盘或目录开始扫描" if not self._current
                        else "扫描中...")
             p.end()
             return

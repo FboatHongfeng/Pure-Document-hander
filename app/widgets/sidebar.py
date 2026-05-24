@@ -1,5 +1,5 @@
 """侧边栏导航 — 主题感知"""
-from PySide6.QtWidgets import QPushButton, QLabel, QFrame, QVBoxLayout
+from PySide6.QtWidgets import QPushButton, QLabel, QFrame, QVBoxLayout, QApplication
 from PySide6.QtCore import Signal, Qt
 
 from app.utils.theme import theme
@@ -72,8 +72,13 @@ class Sidebar(QFrame):
         layout.addWidget(self._logo)
 
         self._subtitle = QLabel("  免费多功能文件工具")
-        self._subtitle.setStyleSheet("font-size: 10px; padding: 0 10px 12px;")
+        self._subtitle.setStyleSheet("font-size: 10px; padding: 0 10px 2px;")
         layout.addWidget(self._subtitle)
+
+        ver = QApplication.instance().applicationVersion() or "1.1.0"
+        self._version_label = QLabel(f"  v{ver}")
+        self._version_label.setStyleSheet("font-size: 10px; padding: 0 10px 12px;")
+        layout.addWidget(self._version_label)
 
         self._sep = QFrame()
         self._sep.setFrameShape(QFrame.HLine)
@@ -126,6 +131,8 @@ class Sidebar(QFrame):
         self._logo.setStyleSheet(
             f"font-size: 19px; font-weight: bold; color: {p.accent}; padding: 6px 10px;")
         self._subtitle.setStyleSheet(
+            f"font-size: 10px; color: {p.text_muted}; padding: 0 10px 2px;")
+        self._version_label.setStyleSheet(
             f"font-size: 10px; color: {p.text_muted}; padding: 0 10px 12px;")
         self._sep.setStyleSheet(f"background: {p.border_main};")
         for btn in self.buttons:

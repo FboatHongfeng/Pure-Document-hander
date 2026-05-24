@@ -3,13 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+
+# PyInstaller
 dist/
 build/
 *.spec
-
-# PyInstaller
-*.exe
-*.manifest
 
 # IDE
 .vscode/
@@ -20,15 +18,17 @@ build/
 Thumbs.db
 
 # Logs
-logs/*.log
+logs/
 
-# User settings (contains personal paths)
-resources/user_settings.json
-
-# FFmpeg (too large, user installs separately)
+# FFmpeg (bundled for packaging)
 ffmpeg/
 
-# Temp
+# Temp / cache
 *.tmp
 *.bak
 *.old
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/

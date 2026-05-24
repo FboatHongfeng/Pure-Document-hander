@@ -2,6 +2,7 @@
 import os
 import subprocess
 import string
+from collections import defaultdict
 from ctypes import windll
 
 from PySide6.QtWidgets import (
@@ -20,6 +21,33 @@ from app.utils.theme import theme
 from app.utils.logger import get_logger
 
 logger = get_logger("junk_scan")
+
+# ── 垃圾文件分类映射 ──
+JUNK_CATEGORY_MAP = {
+    "浏览器缓存": ["Chrome", "Edge", "Firefox", "QQBrowser", "IE 浏览器", "INetCache"],
+    "临时文件": ["临时文件", "临时编辑", "Windows 系统临时", "系统临时"],
+    "系统缓存": ["Prefetch", "Thumbnails", "预读取", "缩略图缓存", "Windows Update"],
+    "软件残留": ["NVIDIA", "AMD", "VS Code", "__pycache__", "node_modules",
+              "Python", "Office 最近", "着色器"],
+    "聊天文件": ["QQ", "微信", "WeChat"],
+    "下载残留": [".crdownload", ".part", "未完成的下载"],
+    "备份文件": ["备份文件", ".bak", "旧版本残留", "备份"],
+    "崩溃转储": ["崩溃转储", "CrashDumps", ".dmp", ".mdmp", "内存转储", "Windows 程序崩溃"],
+    "录屏文件": ["Xbox", "录屏", "Recordings", "Captures"],
+    "安装残留": ["Package Cache", "SquirrelTemp", "VisualStudio", "Visual Studio",
+              "安装包缓存", "安装器临时"],
+    "日志文件": ["日志", ".log"],
+    "回收站": ["回收站", "RECYCLE"],
+}
+
+
+def _classify_junk_item(reason: str) -> str:
+    """根据 reason 字段将垃圾项归类"""
+    for category, keywords in JUNK_CATEGORY_MAP.items():
+        for kw in keywords:
+            if kw.lower() in reason.lower():
+                return category
+    return "其他"
 
 
 class JunkWorker(QThread):
@@ -77,6 +105,10 @@ class JunkScanPage(QWidget):
         self._stop_btn.setVisible(False)
         ctrl.addWidget(self._stop_btn)
 
+        self._user_btn = QPushButton("扫描用户目录")
+        self._user_btn.clicked.connect(self._scan_user)
+        ctrl.addWidget(self._user_btn)
+
         self._browse_btn = QPushButton("选择目录...")
         self._browse_btn.clicked.connect(self._browse_and_scan)
         ctrl.addWidget(self._browse_btn)
@@ -109,6 +141,13 @@ class JunkScanPage(QWidget):
         path = QFileDialog.getExistingDirectory(self, "选择要扫描的目录")
         if path:
             self._start_scan([path])
+
+    def _scan_user(self):
+        user = os.environ.get("USERPROFILE", "")
+        if user and os.path.exists(user):
+            self._start_scan([user])
+        else:
+            self._status.setText("无法获取用户目录")
 
     def _start_scan(self, drives: list[str] | None):
         self.scan_btn.setVisible(False)
@@ -161,7 +200,19 @@ class JunkScanPage(QWidget):
         self._clear_results()
         p = theme().palette
 
-        total_all = sum(j.size for j in junk_items)
+        # Debug: trace the total_size parameter vs re-computed sum
+        recomputed = sum(j.size for j in junk_items)
+        logger.info(
+            f"_show_result: junk_items={len(junk_items)}, "
+            f"signal_total_size={total_size} ({format_size(total_size)}), "
+            f"recomputed_sum={recomputed} ({format_size(recomputed)})"
+        )
+        if len(junk_items) > 0 and recomputed == 0:
+            sample_sizes = [j.size for j in junk_items[:10]]
+            logger.warning(f"  WARNING: {len(junk_items)} items but recomputed sum is 0! "
+                           f"First 10 sizes: {sample_sizes}")
+
+        total_all = recomputed
         if file_categories:
             for items in file_categories.values():
                 total_all += sum(i.size for i in items)
@@ -214,7 +265,7 @@ class JunkScanPage(QWidget):
                     l.setStyleSheet(f"font-size:12px; color:{p.text_secondary}; border:none;"))
                 self.result_layout.addWidget(w)
 
-        # 按分类分组显示（保持类别完整）
+        # 按分类分组显示（保持类别完整）— 每类最多显示 100 条
         if file_categories:
             cats_order = ["视频", "文档", "压缩包", "图片", "音频", "程序"]
             for cat in cats_order:
@@ -223,16 +274,70 @@ class JunkScanPage(QWidget):
                     continue
                 cat_sz = sum(i.size for i in items)
                 _add_item("", f"{cat}文件 · {len(items)}个 · 共{format_size(cat_sz)}", True)
-                for item in sorted(items, key=lambda x: x.size, reverse=True)[:8]:
+                display_items = sorted(items, key=lambda x: x.size, reverse=True)[:100]
+                for item in display_items:
                     _add_item(item.path,
                               f"{os.path.basename(item.path)}  ({format_size(item.size)})")
+                if len(items) > 100:
+                    _add_item(
+                        None,
+                        f"  ... 还有 {len(items) - 100} 个大文件未显示（已限制显示数量）"
+                    )
 
-        # 垃圾文件
+        # 垃圾文件 — 按类别分组显示
+        JUNK_CAP_PER_CATEGORY = 200
+        JUNK_CAP_TOTAL = 2000
         if junk_items:
-            _add_item("", f"可疑垃圾 · {len(junk_items)}个 · 共{format_size(total_size)}", True)
-            for item in sorted(junk_items, key=lambda x: x.size, reverse=True)[:50]:
-                _add_item(item.path,
-                          f"[{item.reason}] {os.path.basename(item.path)}  ({format_size(item.size)})")
+            # 归类
+            categorized: dict[str, list] = defaultdict(list)
+            for item in junk_items:
+                cat = _classify_junk_item(item.reason)
+                categorized[cat].append(item)
+
+            # 类别摘要
+            junk_cat_order = [
+                "浏览器缓存", "临时文件", "系统缓存", "软件残留",
+                "聊天文件", "下载残留", "备份文件", "崩溃转储",
+                "录屏文件", "安装残留", "日志文件", "回收站", "其他",
+            ]
+            cat_info: dict[str, dict] = {}
+            for cat, items in categorized.items():
+                sorted_items = sorted(items, key=lambda x: x.size, reverse=True)
+                cat_info[cat] = {
+                    "items": sorted_items,
+                    "count": len(items),
+                    "total_size": sum(j.size for j in items),
+                }
+
+            total_displayed = 0
+            for cat in junk_cat_order:
+                if cat not in cat_info:
+                    continue
+                info = cat_info[cat]
+                _add_item(
+                    "",
+                    f"  {cat} · {info['count']}个 · 共{format_size(info['total_size'])}",
+                    True,
+                )
+                # 每类最多显示 JUNK_CAP_PER_CATEGORY 条
+                display_items = info["items"][:JUNK_CAP_PER_CATEGORY]
+                for item in display_items:
+                    if total_displayed >= JUNK_CAP_TOTAL:
+                        break
+                    _add_item(item.path,
+                              f"[{item.reason}] {os.path.basename(item.path)}  ({format_size(item.size)})")
+                    total_displayed += 1
+                if len(info["items"]) > JUNK_CAP_PER_CATEGORY:
+                    _add_item(
+                        None,
+                        f"  ... 还有 {len(info['items']) - JUNK_CAP_PER_CATEGORY} 个文件未显示（已限制每类显示数量）"
+                    )
+                if total_displayed >= JUNK_CAP_TOTAL:
+                    _add_item(
+                        None,
+                        f"  ... 已达到显示上限，仅展示前 {JUNK_CAP_TOTAL} 个文件"
+                    )
+                    break
 
         self._status.setText(f"扫描完成 | 右键可打开文件位置")
 
@@ -253,14 +358,9 @@ class JunkScanPage(QWidget):
                 background:{p.accent}; color:{p.accent_text};
             }}
         """)
-        act_open = QAction("打开文件位置", parent)
-        act_open.triggered.connect(lambda: (
-            subprocess.Popen(['explorer', '/select,' + os.path.abspath(path)])
-        ))
-        menu.addAction(act_open)
         act_dir = QAction("打开所在文件夹", parent)
         act_dir.triggered.connect(lambda: (
-            os.startfile(os.path.dirname(os.path.abspath(path)))
+            subprocess.Popen(['explorer', '/select,', os.path.abspath(path)])
         ))
         menu.addAction(act_dir)
         menu.exec(QCursor.pos())
@@ -284,6 +384,14 @@ class JunkScanPage(QWidget):
         """)
 
         self._browse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background:{p.bg_input}; border:1px solid {p.border_card};
+                border-radius:8px; padding:8px 16px;
+                color:{p.text_primary}; font-size:13px;
+            }}
+            QPushButton:hover {{ background:{p.bg_hover}; }}
+        """)
+        self._user_btn.setStyleSheet(f"""
             QPushButton {{
                 background:{p.bg_input}; border:1px solid {p.border_card};
                 border-radius:8px; padding:8px 16px;

@@ -33,6 +33,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Pure")
+    app.setApplicationVersion("1.1.0")
     app.setStyle("Fusion")
 
     font = QFont("Microsoft YaHei", 10)
@@ -40,15 +41,10 @@ def main():
 
     # 加载保存的主题设置
     try:
-        import json
-        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "resources", "user_settings.json")
-        if os.path.exists(settings_path):
-            with open(settings_path, "r") as f:
-                s = json.load(f)
-            saved_theme = s.get("theme", "light")
-            from app.utils.theme import theme
-            theme().set_theme(saved_theme)
+        from app.utils.config import config
+        saved_theme = config.get("theme", "light")
+        from app.utils.theme import theme
+        theme().set_theme(saved_theme)
     except Exception:
         pass
 

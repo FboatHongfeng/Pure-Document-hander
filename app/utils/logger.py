@@ -22,7 +22,7 @@ def _get_log_dir() -> str:
             candidates.append(os.path.join(base, "logs"))
     except Exception:
         pass
-    candidates.append(os.path.join(os.path.expanduser("~"), ".fileforge", "logs"))
+    candidates.append(os.path.join(os.path.expanduser("~"), ".pure", "logs"))
     for d in candidates:
         try:
             os.makedirs(d, exist_ok=True)
@@ -40,7 +40,7 @@ def init_logging() -> str:
 
     log_dir = _get_log_dir()
     timestamp = datetime.datetime.now().strftime("%Y%m%d")
-    _log_path = os.path.join(log_dir, f"fileforge_{timestamp}.log")
+    _log_path = os.path.join(log_dir, f"pure_{timestamp}.log")
 
     fmt = logging.Formatter(
         "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
@@ -51,7 +51,7 @@ def init_logging() -> str:
     file_handler.setFormatter(fmt)
     file_handler.setLevel(logging.DEBUG)
 
-    root = logging.getLogger("fileforge")
+    root = logging.getLogger("pure")
     root.setLevel(logging.DEBUG)
     root.addHandler(file_handler)
 
@@ -64,7 +64,7 @@ def get_logger(name: str) -> logging.Logger:
     """获取模块级 logger"""
     if not _log_initialized:
         init_logging()
-    return logging.getLogger(f"fileforge.{name}")
+    return logging.getLogger(f"pure.{name}")
 
 
 def get_log_path() -> str:

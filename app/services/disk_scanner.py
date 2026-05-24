@@ -47,6 +47,7 @@ EXT_CATEGORY_MAP = {
     ".xls": "documents", ".xlsx": "documents", ".ppt": "documents",
     ".pptx": "documents", ".txt": "documents", ".md": "documents",
     ".csv": "documents", ".odt": "documents",
+    ".wps": "documents", ".et": "documents", ".dps": "documents",
     ".mp4": "videos", ".avi": "videos", ".mkv": "videos",
     ".mov": "videos", ".wmv": "videos", ".flv": "videos",
     ".webm": "videos", ".m4v": "videos", ".mts": "videos",
@@ -55,6 +56,7 @@ EXT_CATEGORY_MAP = {
     ".jpg": "images", ".jpeg": "images", ".png": "images",
     ".gif": "images", ".bmp": "images", ".svg": "images",
     ".webp": "images", ".ico": "images", ".tiff": "images",
+    ".jpe": "images", ".heic": "images", ".heif": "images",
     ".zip": "archives", ".rar": "archives", ".7z": "archives",
     ".tar": "archives", ".gz": "archives", ".bz2": "archives",
     ".exe": "programs", ".msi": "programs", ".dll": "programs",
@@ -294,15 +296,35 @@ def find_junk_files(drives: list[str] | None = None,
                                     path=full_path, size=size,
                                     reason=reason, confidence=confidence,
                                 ))
+                                # Debug: log sample sizes to trace 0B total-size issue
+                                cnt = len(junk_items)
+                                if cnt % 1000 == 1:
+                                    logger.info(
+                                        f"  Junk #{cnt}: size={format_size(size)}, "
+                                        f"path={full_path[:80]}"
+                                    )
                             break
                     # 限制总数避免内存爆炸
-                    if len(junk_items) > 5000:
+                    if len(junk_items) > 10000:
                         break
-                if len(junk_items) > 5000:
+                if len(junk_items) > 10000:
                     break
 
     if progress_cb:
         progress_cb(f"垃圾分析完成: {len(junk_items)} 个可疑文件")
+
+    # Debug: log size distribution to diagnose 0B total-size issue
+    all_sizes = [j.size for j in junk_items]
+    if all_sizes:
+        logger.info(
+            f"  Junk scan summary: {len(junk_items)} items, "
+            f"total={format_size(sum(all_sizes))}, "
+            f"min={format_size(min(all_sizes))}, "
+            f"max={format_size(max(all_sizes))}, "
+            f"avg={format_size(sum(all_sizes) // len(all_sizes))}"
+        )
+    else:
+        logger.info("  Junk scan summary: 0 items")
     logger.info(f"垃圾扫描: {len(junk_items)} 项")
     return junk_items
 
@@ -310,9 +332,9 @@ def find_junk_files(drives: list[str] | None = None,
 # 大文件分类映射
 FILE_CATEGORIES = {
     "视频": {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mts"},
-    "图片": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg"},
+    "图片": {".jpg", ".jpeg", ".jpe", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg", ".heic", ".heif"},
     "音频": {".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"},
-    "文档": {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".txt", ".csv", ".md"},
+    "文档": {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".txt", ".csv", ".md", ".wps", ".et", ".dps"},
     "压缩包": {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"},
     "程序": {".exe", ".msi", ".dll", ".apk"},
 }
